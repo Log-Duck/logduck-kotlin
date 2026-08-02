@@ -8,8 +8,14 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import java.time.Instant
 
-/** An event to send to LogDuck. */
-public data class LogDuckEvent(
+/**
+ * An event to send to LogDuck.
+ *
+ * `@JvmOverloads` so a Java caller can write `new LogDuckEvent("order.placed")`
+ * rather than passing all six arguments — Kotlin default arguments generate no
+ * overloads for Java on their own.
+ */
+public data class LogDuckEvent @JvmOverloads constructor(
     /**
      * What happened, e.g. `user.signup` (required, max 100 characters).
      *

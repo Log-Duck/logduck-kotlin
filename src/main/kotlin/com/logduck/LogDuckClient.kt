@@ -22,7 +22,7 @@ import java.util.UUID
  * One instance is enough for a process — it holds no per-request state and is
  * safe to share between threads.
  */
-public class LogDuckClient(
+public class LogDuckClient @JvmOverloads constructor(
     private val options: LogDuckOptions,
     private val transport: LogDuckTransport = HttpUrlConnectionTransport(options.timeout),
     private val logger: LogDuckLogger = StderrLogger,

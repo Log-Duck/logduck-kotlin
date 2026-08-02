@@ -2,8 +2,14 @@ package com.logduck
 
 import java.time.Duration
 
-/** Configuration for [LogDuckClient]. */
-public data class LogDuckOptions(
+/**
+ * Configuration for [LogDuckClient].
+ *
+ * `@JvmOverloads` is load-bearing, not decoration: Kotlin default arguments do
+ * not cross the Java boundary, so without it a Java caller has to pass all
+ * seven arguments to set the two that are required.
+ */
+public data class LogDuckOptions @JvmOverloads constructor(
     /** Your LogDuck API key (required). Must start with `ld_`. */
     public val apiKey: String,
 
