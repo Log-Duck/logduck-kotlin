@@ -1,0 +1,71 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # The library targets Java 11 bytecode; these are the JDKs it has to
+        # keep working under. Gradle downloads the 11 toolchain it compiles
+        # against regardless of which one runs the build.
+        java: ["11", "17", "21"]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: ${{ matrix.java }}
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - run: ./gradlew build --console=plain
+
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-java-${{ matrix.java }}
+          path: build/reports/tests/test/
+          if-no-files-found: warn
+
+  api-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      # The published jar must carry Java 11 bytecode. A toolchain
+      # misconfiguration silently produces a newer class file version, which
+      # then fails at the consumer's runtime rather than here.
+      - name: Verify the bytecode targets Java 11
+        run: |
+          ./gradlew jar --console=plain
+          jar=$(ls build/libs/logduck-*.jar | grep -v sources | head -1)
+          unzip -p "$jar" com/logduck/LogDuckClient.class > /tmp/LogDuckClient.class
+          # Bytes 4-7 of a class file are minor then major version, big-endian.
+          # `NF` skips od's trailing blank line, which would otherwise be read
+          # as a second, bogus value.
+          major=$(od -An -tu1 -j6 -N2 /tmp/LogDuckClient.class | awk 'NF{print $1*256+$2; exit}')
+          echo "class file major version: $major"
+          if [[ "$major" != "55" ]]; then
+            echo "::error::Expected Java 11 bytecode (major 55), got major $major."
+            exit 1
+          fi

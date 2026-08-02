@@ -1,0 +1,112 @@
+# Publishes the library to Maven Central.
+#
+#   git tag v1.1.0 && git push origin v1.1.0
+#
+# Maven Central is the strictest of the registries this SDK family publishes
+# to. Before the first release it needs, one time:
+#
+#   1. The `com.logduck` namespace verified at central.sonatype.com, which
+#      means adding the TXT record it asks for to the logduck.com DNS zone.
+#   2. A GPG key pair, its public half published to a keyserver. Central
+#      rejects unsigned artifacts outright.
+#   3. Four repository secrets:
+#        MAVEN_CENTRAL_USERNAME / MAVEN_CENTRAL_PASSWORD
+#            a *user token* from central.sonatype.com, not the account password
+#        SIGNING_KEY
+#            the ASCII-armoured private key: `gpg --armor --export-secret-keys <id>`
+#        SIGNING_PASSWORD
+#            its passphrase
+#
+# Unlike npm, PyPI and NuGet, a release here is not instant — Central validates
+# the bundle asynchronously. `automaticRelease = true` in build.gradle.kts
+# promotes it once validation passes, so a green job means published.
+name: Publish
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Resolve and check the version
+        id: version
+        run: |
+          v=$(sed -n 's/^version = "\(.*\)"$/\1/p' build.gradle.kts)
+          if [[ -z "$v" ]]; then
+            echo "::error::No version found in build.gradle.kts."
+            exit 1
+          fi
+
+          # The same string goes out in the User-Agent of every request, so a
+          # drift between the two makes the traffic lie about which build sent it.
+          sdk=$(sed -n 's/.*const val SDK_VERSION: String = "\(.*\)"$/\1/p' \
+            src/main/kotlin/com/logduck/LogDuckClient.kt)
+          if [[ "$sdk" != "$v" ]]; then
+            echo "::error::build.gradle.kts says $v but SDK_VERSION is $sdk."
+            exit 1
+          fi
+
+          # A manual run has no tag to check against.
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            tag="${GITHUB_REF_NAME#v}"
+            if [[ "$tag" != "$v" ]]; then
+              echo "::error::Tag says $tag but the build says $v. Bump the source and re-tag."
+              exit 1
+            fi
+          fi
+
+          echo "Publishing version $v"
+          echo "value=$v" >> "$GITHUB_OUTPUT"
+
+      # A Maven Central version can never be replaced or removed, only
+      # superseded. Finding this out after the build is finding it out too late.
+      - name: Refuse to republish an existing version
+        run: |
+          v="${{ steps.version.outputs.value }}"
+          url="https://repo1.maven.org/maven2/com/logduck/logduck/$v/"
+          code=$(curl -s -o /dev/null -w "%{http_code}" "$url")
+          if [[ "$code" == "200" ]]; then
+            echo "::error::com.logduck:logduck:$v is already on Maven Central. Bump and re-tag."
+            exit 1
+          fi
+          echo "Version $v is free (Central answered $code)."
+
+      - run: ./gradlew build --console=plain
+
+      - name: Publish to Maven Central
+        env:
+          # The vanniktech plugin reads these as Gradle properties; the
+          # ORG_GRADLE_PROJECT_ prefix is how Gradle maps an environment
+          # variable onto one, so no credential is ever written to disk.
+          ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          ORG_GRADLE_PROJECT_mavenCentralPassword: ${{ secrets.MAVEN_CENTRAL_PASSWORD }}
+          ORG_GRADLE_PROJECT_signingInMemoryKey: ${{ secrets.SIGNING_KEY }}
+          ORG_GRADLE_PROJECT_signingInMemoryKeyPassword: ${{ secrets.SIGNING_PASSWORD }}
+        run: |
+          if [[ -z "$ORG_GRADLE_PROJECT_mavenCentralUsername" ]]; then
+            echo "::error::MAVEN_CENTRAL_USERNAME is not set on this repository."
+            exit 1
+          fi
+          if [[ -z "$ORG_GRADLE_PROJECT_signingInMemoryKey" ]]; then
+            echo "::error::SIGNING_KEY is not set. Central rejects unsigned artifacts."
+            exit 1
+          fi
+          ./gradlew publishToMavenCentral --no-configuration-cache --console=plain
