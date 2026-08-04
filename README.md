@@ -8,7 +8,7 @@ an Android app.
 
 ```kotlin
 dependencies {
-    implementation("com.logduck:logduck:1.0.0")
+    implementation("com.logduck:logduck:2.0.0")
 }
 ```
 
@@ -90,6 +90,15 @@ logduck.send(
 
 One client is enough for a process — it holds no per-request state and is safe
 to share between threads.
+
+**`message` is what a push notification shows.** Without it the body falls back
+to listing the first few `data` keys, which reads like `total: 4999, currency:
+NOK` rather than "Order placed on the Pro plan".
+
+**Wire names.** The event is a CloudEvents 1.0 document, and a CloudEvents
+extension attribute name must be lowercase alphanumeric — so `sessionId` goes
+out as `sessionid`. The SDK maps it for you; you only need this when comparing
+against the raw HTTP API.
 
 **Naming `type`:** the server lowercases it and requires `^[a-z][a-z0-9_.]*$` —
 letters, digits, `_` and `.`, starting with a letter. So `order.placed` and

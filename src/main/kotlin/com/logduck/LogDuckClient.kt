@@ -156,6 +156,8 @@ public class LogDuckClient @JvmOverloads constructor(
             "subject exceeds $SUBJECT_LIMIT characters"
         (event.sessionId?.length ?: 0) > SESSION_ID_LIMIT ->
             "sessionId exceeds $SESSION_ID_LIMIT characters"
+        (event.message?.length ?: 0) > MESSAGE_LIMIT ->
+            "message exceeds $MESSAGE_LIMIT characters"
         (event.emoji?.length ?: 0) > EMOJI_LIMIT -> "emoji exceeds $EMOJI_LIMIT characters"
         else -> null
     }
@@ -168,7 +170,11 @@ public class LogDuckClient @JvmOverloads constructor(
         put("type", JsonPrimitive(event.type))
         put("source", JsonPrimitive(options.source))
         event.subject?.let { put("subject", JsonPrimitive(it)) }
-        event.sessionId?.let { put("sessionId", JsonPrimitive(it)) }
+        // Lowercase on the wire: a CloudEvents extension attribute name must be
+        // lowercase alphanumeric, and the server discards what it does not
+        // recognise rather than erroring.
+        event.sessionId?.let { put("sessionid", JsonPrimitive(it)) }
+        event.message?.let { put("message", JsonPrimitive(it)) }
         event.time?.let { put("time", JsonPrimitive(ISO_INSTANT.format(it))) }
         event.data?.let { put("data", it.toJsonElement()) }
         event.emoji?.let { put("emoji", JsonPrimitive(it)) }
@@ -198,12 +204,13 @@ public class LogDuckClient @JvmOverloads constructor(
          * checks the git tag against it and refuses to publish on a mismatch,
          * so the traffic cannot lie about which build sent it.
          */
-        const val SDK_VERSION: String = "1.0.0"
+        const val SDK_VERSION: String = "2.0.0"
 
         const val TYPE_LIMIT = 100
         const val SOURCE_LIMIT = 200
         const val SUBJECT_LIMIT = 500
         const val SESSION_ID_LIMIT = 256
+        const val MESSAGE_LIMIT = 500
         const val EMOJI_LIMIT = 10
 
         private val ISO_INSTANT: DateTimeFormatter = DateTimeFormatter.ISO_INSTANT

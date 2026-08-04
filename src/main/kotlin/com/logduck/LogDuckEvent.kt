@@ -28,8 +28,21 @@ public data class LogDuckEvent @JvmOverloads constructor(
     /** The resource the event is about, e.g. a user or order id (max 500). */
     public val subject: String? = null,
 
-    /** Groups related events within a session (max 256). */
+    /**
+     * Groups related events within a session (max 256).
+     *
+     * Sent as `sessionid`: a CloudEvents extension attribute name must be
+     * lowercase alphanumeric, so the wire name differs from this one.
+     */
     public val sessionId: String? = null,
+
+    /**
+     * Human-readable summary of the event (max 500 characters).
+     *
+     * This is what a push notification shows. Without it the body falls back
+     * to listing the first few [data] keys.
+     */
+    public val message: String? = null,
 
     /** When it happened. Defaults to server time if unset. */
     public val time: Instant? = null,

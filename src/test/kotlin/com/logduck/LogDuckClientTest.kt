@@ -136,6 +136,48 @@ class LogDuckClientTest {
         assertFalse(body.containsKey("subject"))
         assertFalse(body.containsKey("emoji"))
         assertFalse(body.containsKey("time"))
+        assertFalse(body.containsKey("message"))
+        assertFalse(body.containsKey("sessionid"))
+    }
+
+    /**
+     * The wire names are the contract, and they are not the Kotlin property
+     * names. A CloudEvents extension attribute name must be lowercase
+     * alphanumeric, so sessionId goes out as sessionid. The server discards
+     * what it does not recognise rather than erroring, so getting this wrong
+     * loses the field silently - hence asserting the camelCase spelling is
+     * absent, not just that the lowercase one is present.
+     */
+    @Test
+    fun `sends CloudEvents wire names`() = runTest {
+        val transport = FakeTransport(listOf(FakeTransport.ok()))
+
+        client(transport).send(
+            LogDuckEvent(
+                type = "order.placed",
+                subject = "order_9127",
+                sessionId = "sess_8f21c",
+                message = "Order placed on the Pro plan",
+            ),
+        )
+
+        val body = transport.requests.single().json()
+        assertEquals("sess_8f21c", body["sessionid"]!!.jsonPrimitive.content)
+        assertEquals("Order placed on the Pro plan", body["message"]!!.jsonPrimitive.content)
+        assertFalse(body.containsKey("sessionId"))
+        assertFalse(body.containsKey("metadata"))
+    }
+
+    @Test
+    fun `rejects an over-long message without touching the network`() = runTest {
+        val transport = FakeTransport(listOf(FakeTransport.ok()))
+
+        val result = client(transport).send(
+            LogDuckEvent(type = "order.placed", message = "x".repeat(501)),
+        )
+
+        assertNull(result)
+        assertTrue(transport.requests.isEmpty())
     }
 
     @Test
