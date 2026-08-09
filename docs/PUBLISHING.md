@@ -57,11 +57,38 @@ dig +short logduck.com TXT | grep -F "<the code>"
 
 ## 2. User token
 
-**Account → Generate User Token.** It returns a name/password pair, shown once.
+**Account → Generate User Token.** It returns a name/password pair, shown once,
+wrapped in an XML block:
+
+```xml
+<server>
+  <id>central</id>
+  <username>...</username>
+  <password>...</password>
+</server>
+```
+
+That is a Maven `settings.xml` fragment. Gradle does not read it — only the two
+values inside matter, and `<id>` is a Maven server name to ignore.
 
 These are *not* your Portal login. Generating a new token invalidates the old
 one, so if publishes start failing with a 401, check whether a token was
 regenerated somewhere else.
+
+Extract them with the shell rather than by hand. A trailing newline or a stray
+space is preserved verbatim in a GitHub secret and comes back as a 401 that
+looks exactly like a wrong token:
+
+```bash
+# paste the XML into /tmp/token.xml, then:
+sed -n 's|.*<username>\(.*\)</username>.*|\1|p' /tmp/token.xml | tr -d '\n \t' \
+  | gh secret set MAVEN_CENTRAL_USERNAME --repo Log-Duck/logduck-kotlin
+
+sed -n 's|.*<password>\(.*\)</password>.*|\1|p' /tmp/token.xml | tr -d '\n \t' \
+  | gh secret set MAVEN_CENTRAL_PASSWORD --repo Log-Duck/logduck-kotlin
+
+rm /tmp/token.xml
+```
 
 ## 3. GPG signing key
 
@@ -83,6 +110,17 @@ gpg --keyserver keyserver.ubuntu.com --send-keys <KEY_ID>
 gpg --armor --export-secret-keys <KEY_ID> > /tmp/signing-key.asc
 ```
 
+`--send-keys` publishes the **public** half only. It cannot upload a private key
+even if asked; the private half goes to the `SIGNING_KEY` secret and nowhere
+else.
+
+Confirm it arrived before relying on it — a key that never propagated fails
+Central's signature check long after the upload appears to have worked:
+
+```bash
+gpg --keyserver keyserver.ubuntu.com --recv-keys <KEY_ID>
+```
+
 Use `keyserver.ubuntu.com`. `keys.openpgp.org` strips user IDs until you confirm
 by email, and Central's lookup can fail against a key with no UID.
 
@@ -99,8 +137,9 @@ gh secret set SIGNING_KEY            --repo Log-Duck/logduck-kotlin < /tmp/signi
 rm /tmp/signing-key.asc
 ```
 
-The first three prompt for a value. `SIGNING_KEY` reads the whole armoured
-block, `BEGIN`/`END` lines included.
+`SIGNING_KEY` reads the whole armoured block, `BEGIN`/`END` lines and internal
+newlines included — those matter, so do not strip whitespace from this one the
+way you should for the token values.
 
 Verify all four are present — a missing one fails late, after the build:
 
