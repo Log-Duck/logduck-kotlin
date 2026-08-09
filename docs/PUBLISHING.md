@@ -71,9 +71,14 @@ wrapped in an XML block:
 That is a Maven `settings.xml` fragment. Gradle does not read it — only the two
 values inside matter, and `<id>` is a Maven server name to ignore.
 
-These are *not* your Portal login. Generating a new token invalidates the old
-one, so if publishes start failing with a 401, check whether a token was
-regenerated somewhere else.
+These are *not* your Portal login.
+
+**Generating a new token does not revoke the old one.** The Portal keeps named
+tokens side by side under *Active Tokens*, and each has to be revoked on its own
+row. Rotating a credential is therefore two actions, not one — issue the new
+pair, set the secrets, then go back and revoke the old. Assuming the first step
+did the third leaves a live credential behind, which is exactly what happened
+during this repository's setup.
 
 Extract them with the shell rather than by hand. A trailing newline or a stray
 space is preserved verbatim in a GitHub secret and comes back as a 401 that
@@ -186,7 +191,7 @@ hands-off.
 
 | Symptom | Cause |
 |---|---|
-| `401 Unauthorized` | Portal login used instead of a user token, or the token was regenerated |
+| `401 Unauthorized` | Portal login used instead of a user token, or the token in the secret was revoked |
 | `Namespace not allowed` | Namespace unverified, or the DNS TXT record has not propagated |
 | `PGP signature validation failed` | Public key never sent to a keyserver, or sent only to `keys.openpgp.org` without a confirmed UID |
 | `signingInMemoryKey` errors | Usually the passphrase, not the key — confirm `SIGNING_PASSWORD` matches this key |
