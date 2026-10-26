@@ -8,7 +8,7 @@ an Android app.
 
 ```kotlin
 dependencies {
-    implementation("com.logduck:logduck:1.0.0")
+    implementation("com.logduck:logduck:1.1.0")
 }
 ```
 

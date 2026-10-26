@@ -204,7 +204,7 @@ public class LogDuckClient @JvmOverloads constructor(
          * checks the git tag against it and refuses to publish on a mismatch,
          * so the traffic cannot lie about which build sent it.
          */
-        const val SDK_VERSION: String = "1.0.0"
+        const val SDK_VERSION: String = "1.1.0"
 
         const val TYPE_LIMIT = 100
         const val SOURCE_LIMIT = 200

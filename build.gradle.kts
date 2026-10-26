@@ -11,7 +11,7 @@ group = "com.logduck"
 
 // Single source of truth for the version. The release workflow checks the git
 // tag against it and refuses to publish when they disagree.
-version = "1.0.0"
+version = "1.1.0"
 
 repositories {
     mavenCentral()
