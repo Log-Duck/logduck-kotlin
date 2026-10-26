@@ -226,6 +226,98 @@ Going direct means you take on what the SDK handles: generating a valid
 `Idempotency-Key` per event and reusing it across retries, honouring
 `Retry-After` on a 429, and deciding which failures are worth retrying.
 
+## Site usage: screens and app lifecycle
+
+`LogDuckUsage` records screen views and app lifecycle for the dashboard's Site
+tab. These are hits, not events: no push, no webhooks, no alerts.
+
+It needs a **client** key with **allow requests without an origin** switched on
+in the dashboard — an app sends no `Origin` header. Not your server API key.
+
+The lifecycle wiring below uses `ProcessLifecycleOwner`, from
+`androidx.lifecycle:lifecycle-process`:
+
+```kotlin
+implementation("androidx.lifecycle:lifecycle-process:2.8.7")
+```
+
+```kotlin
+import android.app.Application
+import android.os.Build
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
+import com.logduck.LogDuckUsage
+import com.logduck.LogDuckUsageOptions
+import com.logduck.UsageStorage
+import java.io.File
+
+class App : Application() {
+    lateinit var usage: LogDuckUsage
+
+    override fun onCreate() {
+        super.onCreate()
+        val prefs = getSharedPreferences("logduck", MODE_PRIVATE)
+        usage = LogDuckUsage(
+            LogDuckUsageOptions(
+                key = "ld_...",                          // required — a client key
+                appId = packageName,                     // required — sent as `host`
+                storage = object : UsageStorage {        // keeps the install flag and install id
+                    override fun get(key: String) = prefs.getString(key, null)
+                    override fun put(key: String, value: String) = prefs.edit().putString(key, value).apply()
+                    override fun remove(key: String) = prefs.edit().remove(key).apply()
+                },
+                appVersion = BuildConfig.VERSION_NAME,
+                osVersion = "Android ${Build.VERSION.RELEASE}",  // reads like iOS's "iOS 17.5"
+                queueDir = File(filesDir, "logduck"),   // optional — keeps unsent hits across launches
+            )
+        )
+        usage.open()
+
+        ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
+            override fun onStart(owner: LifecycleOwner) = usage.foreground()
+            override fun onStop(owner: LifecycleOwner) = usage.background()
+        })
+    }
+}
+
+// In each screen:
+usage.screen("Checkout")
+```
+
+The SDK has no Android dependency, so it installs no hooks of its own — the
+observer above is the wiring. On a plain JVM, use `FileUsageStorage(dir)`.
+
+**What is sent.** `screen.view` (with `screen`, and `previousscreen` from the
+call before), `app.install` (once ever), `app.open` (once per process),
+`app.foreground` and `app.background`. Every hit carries a random id, the time,
+`platform` `android`, your `appId`, app and OS version, the SDK version, a
+session id, and any `dimensions` (at most ten lowercase keys, never an
+identifier). The session id lives in memory and is renewed after 30 minutes in
+the background.
+
+**Batching.** Hits are sent in batches of up to 50, a second after the first
+one queues. `background()` sends at once, in one request, and no timer runs
+until `foreground()`. A failed send keeps the hits for the next one (up to 500,
+on disk when `queueDir` is set); a 4xx drops the batch and logs one warning.
+Every method returns at once and is safe from any thread.
+
+**Consent and identity.** Anonymous by default: nothing that identifies the
+device is stored — the only thing written before consent is the flag that
+`app.install` was sent.
+
+```kotlin
+usage.consent(true)       // mints a random install id, stores it, sends it as `installid`
+usage.consent(false)      // deletes it, and strips it from hits still queued
+usage.identify("user_42") // sends `userid` and `loggedin`; stores nothing; "" clears it
+```
+
+Hits waiting in `queueDir` hold the install ID and user ID they were recorded
+with until they are sent; withdrawing consent strips the install ID from them.
+
+The server keeps `installid` and `userid` only once your organization has
+switched identity collection on in the dashboard.
+
 ## Dependencies
 
 kotlinx-coroutines and kotlinx-serialization, both `api` dependencies since they
