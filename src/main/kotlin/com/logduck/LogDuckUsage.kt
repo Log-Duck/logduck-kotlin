@@ -10,6 +10,8 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 import java.io.File
 import java.io.IOException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.time.Clock
 import java.time.Duration
 import java.time.Instant
@@ -176,12 +178,13 @@ public class LogDuckUsage(private val options: LogDuckUsageOptions) {
 
     /**
      * Records a `screen.view`. [previous] defaults to the name passed to the
-     * previous call.
+     * previous call in this session. A blank name is ignored.
      */
     public fun screen(name: String, previous: String? = null) {
         val at = options.clock.instant()
+        val screen = name.trim().take(SCREEN_LIMIT)
+        if (screen.isEmpty()) return
         submit {
-            val screen = name.take(SCREEN_LIMIT)
             val previousScreen = (previous ?: lastScreen)?.take(SCREEN_LIMIT)
             lastScreen = screen
             enqueue("screen.view", at) {
@@ -209,15 +212,20 @@ public class LogDuckUsage(private val options: LogDuckUsageOptions) {
     }
 
     /**
-     * Records `app.foreground`. After 30 minutes or more in the background a
-     * new session starts.
+     * Records `app.foreground` when the app returns from the background; does
+     * nothing otherwise, so a cold start records `app.open` only. After 30
+     * minutes or more in the background a new session starts.
      */
     public fun foreground() {
         val at = options.clock.instant()
         submit {
-            enqueue("app.foreground", at)
+            val since = backgroundedAt ?: return@submit
+            if (Duration.between(since, at) >= SESSION_TIMEOUT) {
+                sessionId = randomId()
+                lastScreen = null
+            }
             backgroundedAt = null
-            if (queue.isNotEmpty()) scheduleTimer()
+            enqueue("app.foreground", at)
         }
     }
 
@@ -231,6 +239,8 @@ public class LogDuckUsage(private val options: LogDuckUsageOptions) {
             backgroundedAt = at
             enqueue("app.background", at)
             cancelTimer()
+            // On disk before the send, in case the process dies during it.
+            saveQueue()
             sendBatches(background = true)
         }
     }
@@ -238,13 +248,20 @@ public class LogDuckUsage(private val options: LogDuckUsageOptions) {
     /**
      * Records that the user consented to being recognised across launches.
      * `true` mints a random install id, stores it and attaches it to every
-     * later hit; `false` deletes it. Nothing identifying is stored before this.
+     * later hit; `false` deletes it and strips it from hits still queued.
+     * Nothing identifying is stored before this.
      */
     public fun consent(granted: Boolean) {
         submit {
             if (!granted) {
                 installId = null
                 storage.remove(INSTALL_ID_KEY)
+                if (queue.any { "installid" in it }) {
+                    val stripped = queue.map { hit -> JsonObject(hit - "installid") }
+                    queue.clear()
+                    queue.addAll(stripped)
+                    if (persisted) saveQueue()
+                }
             } else if (installId == null) {
                 installId = randomId().also { storage.put(INSTALL_ID_KEY, it) }
             }
@@ -308,15 +325,6 @@ public class LogDuckUsage(private val options: LogDuckUsageOptions) {
     }
 
     private fun enqueue(type: String, at: Instant, fields: JsonObjectBuilder.() -> Unit = {}) {
-        // A hit after a long spell in the background, without foreground() in
-        // between, still belongs to a new session.
-        backgroundedAt?.let { since ->
-            if (Duration.between(since, at) >= SESSION_TIMEOUT) {
-                sessionId = randomId()
-                backgroundedAt = at
-            }
-        }
-
         queue.addLast(
             buildJsonObject {
                 put("id", randomId())
@@ -468,7 +476,16 @@ public class LogDuckUsage(private val options: LogDuckUsageOptions) {
                 persisted = false
             } else {
                 file.parentFile?.mkdirs()
-                file.writeText(json.encodeToString(JsonArray.serializer(), JsonArray(queue.toList())))
+                // Written whole to a temporary file, then renamed over the
+                // queue, so a crash mid-write never leaves a truncated file.
+                val temp = File(file.parentFile, "${file.name}.tmp")
+                temp.writeText(json.encodeToString(JsonArray.serializer(), JsonArray(queue.toList())))
+                Files.move(
+                    temp.toPath(),
+                    file.toPath(),
+                    StandardCopyOption.REPLACE_EXISTING,
+                    StandardCopyOption.ATOMIC_MOVE,
+                )
                 persisted = true
             }
         } catch (error: IOException) {
@@ -485,6 +502,8 @@ public class LogDuckUsage(private val options: LogDuckUsageOptions) {
             when {
                 !DIMENSION_KEY.matches(key) ->
                     warn("dimension \"$key\" dropped: keys are lowercase identifiers of at most 64 characters")
+                key in RESERVED_DIMENSION_KEYS ->
+                    warn("dimension \"$key\" dropped: dimensions must not carry an identifier")
                 out.size >= DIMENSION_KEYS_MAX ->
                     warn("dimension \"$key\" dropped: at most $DIMENSION_KEYS_MAX dimensions")
                 else -> out[key] = value.take(DIMENSION_VALUE_MAX)
@@ -516,6 +535,16 @@ public class LogDuckUsage(private val options: LogDuckUsageOptions) {
         const val INSTALLED_KEY = "logduck.installed"
         val SESSION_TIMEOUT: Duration = Duration.ofMinutes(30)
         private val DIMENSION_KEY = Regex("^[a-z][a-z0-9_]{0,63}$")
+
+        // Copied from RESERVED_DIMENSION_KEYS in the LogDuck server's
+        // functions/src/shared/schemas/hit.ts. The server refuses a whole hit
+        // that carries one of these, so they are dropped here instead.
+        private val RESERVED_DIMENSION_KEYS = setOf(
+            "id", "uid", "sub", "ip", "email", "mail", "phone", "name", "username", "address",
+            "user", "userid", "user_id", "visitor", "visitorid", "visitor_id", "session", "sessionid", "session_id",
+            "customer_id", "customerid", "member_id", "memberid", "account_id", "accountid",
+            "device_id", "deviceid", "install_id", "installid", "token", "fingerprint",
+        )
 
         fun randomId(): String = UUID.randomUUID().toString().replace("-", "")
     }

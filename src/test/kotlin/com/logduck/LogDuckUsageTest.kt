@@ -57,6 +57,7 @@ class LogDuckUsageTest {
     private fun usage(
         queueDir: File? = null,
         clock: Clock = Clock.fixed(now, ZoneOffset.UTC),
+        logger: LogDuckLogger = quiet,
     ) = LogDuckUsage(
         LogDuckUsageOptions(
             key = "ld_client",
@@ -68,7 +69,7 @@ class LogDuckUsageTest {
             flushInterval = Duration.ofHours(1),
             retryEnabled = false,
             transport = transport,
-            logger = quiet,
+            logger = logger,
             clock = clock,
         ),
     )
@@ -129,6 +130,24 @@ class LogDuckUsageTest {
         second.open()
         second.flushNow()
         assertEquals(listOf("app.open"), transport.hits().map { it.text("type") })
+    }
+
+    @Test
+    fun `a blank screen name is ignored and a name is trimmed`() {
+        val usage = usage()
+        usage.screen("  ")
+        usage.screen(" Home ")
+        usage.flushNow()
+        assertEquals(listOf("Home"), transport.hits().map { it.text("screen") })
+    }
+
+    @Test
+    fun `foreground on a cold start records nothing`() {
+        val usage = usage()
+        usage.open()
+        usage.foreground()
+        usage.flushNow()
+        assertEquals(listOf("app.install", "app.open"), transport.hits().map { it.text("type") })
     }
 
     @Test
@@ -278,11 +297,92 @@ class LogDuckUsageTest {
         transport.requests.clear()
         at = now.plus(Duration.ofMinutes(31))
         usage.foreground()
+        usage.screen("Home")
         usage.flushNow()
         val hits = transport.hits()
         val before = hits.first { it.text("type") == "app.background" }
         val after = hits.first { it.text("type") == "app.foreground" }
         assertNotEquals(before.text("sessionid"), after.text("sessionid"))
+        // A new session's first screen has no previous screen.
+        val home = hits.first { it.text("screen") == "Home" }
+        assertEquals(after.text("sessionid"), home.text("sessionid"))
+        assertNull(home["previousscreen"])
+    }
+
+    @Test
+    fun `a short background keeps the session and the previous screen`() {
+        var at = now
+        val clock = object : Clock() {
+            override fun getZone() = ZoneOffset.UTC
+            override fun withZone(zone: java.time.ZoneId?) = this
+            override fun instant() = at
+        }
+        val usage = usage(clock = clock)
+        usage.screen("Home")
+        usage.background()
+        at = now.plus(Duration.ofMinutes(5))
+        usage.foreground()
+        usage.screen("Next")
+        usage.flushNow()
+        val hits = transport.hits()
+        assertEquals(1, hits.map { it.text("sessionid") }.toSet().size)
+        assertEquals("Home", hits.first { it.text("screen") == "Next" }.text("previousscreen"))
+    }
+
+    @Test
+    fun `withdrawing consent strips installid from hits still queued, on disk too`() {
+        val dir = Files.createTempDirectory("logduck-usage").toFile()
+        try {
+            val queueFile = File(dir, "logduck-usage-queue.json")
+            transport.offline = true
+            val usage = usage(queueDir = dir)
+            usage.consent(true)
+            usage.screen("Home")
+            usage.flushNow()
+            assertTrue(queueFile.readText().contains("installid"))
+
+            usage.consent(false)
+            usage.awaitIdle()
+            assertFalse(queueFile.readText().contains("installid"))
+
+            transport.offline = false
+            transport.requests.clear()
+            usage.flushNow()
+            val hit = transport.hits().single()
+            assertEquals("Home", hit.text("screen"))
+            assertNull(hit["installid"])
+        } finally {
+            dir.deleteRecursively()
+        }
+    }
+
+    @Test
+    fun `background writes the queue to disk before it sends`() {
+        val dir = Files.createTempDirectory("logduck-usage").toFile()
+        try {
+            val queueFile = File(dir, "logduck-usage-queue.json")
+            var onDiskDuringSend = false
+            val usage = LogDuckUsage(
+                LogDuckUsageOptions(
+                    key = "ld_client",
+                    appId = "com.example.app",
+                    queueDir = dir,
+                    flushInterval = Duration.ofHours(1),
+                    transport = LogDuckTransport { request ->
+                        onDiskDuringSend = queueFile.exists()
+                        transport.perform(request)
+                    },
+                    logger = quiet,
+                ),
+            )
+            usage.screen("Home")
+            usage.background()
+            usage.awaitIdle()
+            assertTrue(onDiskDuringSend)
+            assertFalse(queueFile.exists())
+        } finally {
+            dir.deleteRecursively()
+        }
     }
 
     @Test
@@ -293,5 +393,18 @@ class LogDuckUsageTest {
         usage.flushNow()
         val dimensions = transport.hits().single()["dimensions"]!!.jsonObject
         assertEquals(setOf("variant"), dimensions.keys)
+    }
+
+    @Test
+    fun `a reserved dimension key is dropped with one warning and the hit still sent`() {
+        val warnings = mutableListOf<String>()
+        val usage = usage(logger = { message, _ -> warnings += message })
+        usage.setDimensions(mapOf("variant" to "b", "user_id" to "42"))
+        usage.screen("Home")
+        usage.flushNow()
+        val hit = transport.hits().single()
+        assertEquals(setOf("variant"), hit["dimensions"]!!.jsonObject.keys)
+        assertEquals(1, warnings.size)
+        assertTrue(warnings.single().contains("user_id"))
     }
 }

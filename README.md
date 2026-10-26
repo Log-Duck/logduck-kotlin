@@ -234,10 +234,23 @@ tab. These are hits, not events: no push, no webhooks, no alerts.
 It needs a **client** key with **allow requests without an origin** switched on
 in the dashboard — an app sends no `Origin` header. Not your server API key.
 
+The lifecycle wiring below uses `ProcessLifecycleOwner`, from
+`androidx.lifecycle:lifecycle-process`:
+
 ```kotlin
+implementation("androidx.lifecycle:lifecycle-process:2.8.7")
+```
+
+```kotlin
+import android.app.Application
+import android.os.Build
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
 import com.logduck.LogDuckUsage
 import com.logduck.LogDuckUsageOptions
 import com.logduck.UsageStorage
+import java.io.File
 
 class App : Application() {
     lateinit var usage: LogDuckUsage
@@ -255,7 +268,7 @@ class App : Application() {
                     override fun remove(key: String) = prefs.edit().remove(key).apply()
                 },
                 appVersion = BuildConfig.VERSION_NAME,
-                osVersion = Build.VERSION.RELEASE,
+                osVersion = "Android ${Build.VERSION.RELEASE}",  // reads like iOS's "iOS 17.5"
                 queueDir = File(filesDir, "logduck"),   // optional — keeps unsent hits across launches
             )
         )
@@ -295,9 +308,12 @@ device is stored — the only thing written before consent is the flag that
 
 ```kotlin
 usage.consent(true)       // mints a random install id, stores it, sends it as `installid`
-usage.consent(false)      // deletes it
+usage.consent(false)      // deletes it, and strips it from hits still queued
 usage.identify("user_42") // sends `userid` and `loggedin`; stores nothing; "" clears it
 ```
+
+Hits waiting in `queueDir` hold the install ID and user ID they were recorded
+with until they are sent; withdrawing consent strips the install ID from them.
 
 The server keeps `installid` and `userid` only once your organization has
 switched identity collection on in the dashboard.
